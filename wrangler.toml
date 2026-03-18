@@ -2,6 +2,17 @@ name = "discord-oidc"
 main = "worker.js"
 compatibility_date = "2022-12-24"
 
-kv_namespaces = [
-  { binding = "KV", id = "0b9abda82acf461c8d4ecda656217e20", preview_id = "b43c22430b5240dea89cd6cc350d3946" }
-]
+[vars]
+# Required — your Discord application OAuth2 credentials
+# CLIENT_ID = ""
+# CLIENT_SECRET = ""  # Use `wrangler secret put CLIENT_SECRET` instead for production
+
+# Required — your Cloudflare Access callback URL
+# REDIRECT_URI = "https://yourname.cloudflareaccess.com/cdn-cgi/access/callback"
+
+# Optional — comma-separated guild IDs to restrict access (leave empty to allow any user)
+# ALLOWED_GUILDS = ""
+
+# Optional — enable admin role detection (leave empty to skip)
+# ADMIN_GUILD_ID = ""  # defaults to first ALLOWED_GUILDS entry if not set
+# ADMIN_ROLE_ID = ""
