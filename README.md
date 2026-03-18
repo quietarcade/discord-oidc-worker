@@ -1,53 +1,137 @@
-# Discord OIDC Provider for Cloudflare Access
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/a992766f-24d7-4271-88b4-62333265a1bf" alt="Herugrim" width="250">
+</p>
 
-Simply put: Allows you to authorise with Cloudflare Access using your Discordd account via a Cloudflare Worker. Wraps OIDC around the Discord OAuth2 API to achieve this, storing signing keys in KV. 
+# Herugrim - Discord OIDC Provider for Cloudflare Access
 
-Process flow was inspired by [kimcore/discord-oidc](https://github.com/kimcore/discord-oidc) but rewritten entirely for [Cloudflare Workers](https://workers.cloudflare.com/) and [Hono](https://honojs.dev/).
+A Discord OIDC provider for Cloudflare Access, based on [Erisa/discord-oidc-worker](https://github.com/Erisa/discord-oidc-worker). Herugrim is developed and maintained by [@quietarcade](https://github.com/quietarcade) as part of [Meduseld](https://github.com/meduseld-io). Rebuilt with environment-based configuration, role-based admin detection, and richer user profile claims.
 
-Some ideas were also taken from [eidam/cf-access-workers-oidc](https://github.com/eidam/cf-access-workers-oidc)
+Allows you to authenticate with Cloudflare Access using your Discord account via a Cloudflare Worker. Wraps OIDC around the Discord OAuth2 API.
 
-Show them some love!
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/meduseld-io/herugrim)
+
+## What Changed from the Original
+
+### `worker.js`
+
+- **Environment-based configuration** - all config reads from Wrangler environment variables (`env.CLIENT_ID`, `env.CLIENT_SECRET`, etc.) instead of hardcoded constants. Secrets stay out of source code.
+- **Removed KV dependency** - signing keys are generated in-memory via `crypto.subtle.generateKey()` instead of stored in Cloudflare KV.
+- **Migrated to Hono** - replaced the raw `addEventListener("fetch")` handler with [Hono](https://honojs.dev/) for cleaner routing.
+- **Added `discord_user` claim to ID token** - the JWT includes a `discord_user` object with: `id`, `username`, `global_name`, `avatar`, `discriminator`, and `is_admin`.
+- **Added optional admin role detection** - when `ADMIN_ROLE_ID` is set, the worker checks guild membership for that role and sets `is_admin` accordingly. `ADMIN_GUILD_ID` defaults to `ALLOWED_GUILDS[0]` if not set separately.
+- **Dynamic OAuth scopes** - only requests `guilds.members.read` when admin detection is enabled, reducing permissions for simpler setups.
+- **Added error handling** - Discord API responses are validated with descriptive error messages on failure.
+- **Added `/health` endpoint** - returns `{ "status": "ok" }` for uptime monitoring.
+- **Added guild restriction** - users must be a member of an allowed guild to authenticate (optional).
+
+### `wrangler.toml`
+
+- **Removed KV namespace binding** - only `name`, `main`, `compatibility_date`, and `[vars]` template remain.
+
+### `package.json`
+
+- **Simplified** - only `hono`, `jose`, and `wrangler` as dependencies. Two scripts: `dev` and `deploy`.
+
+### Removed from Original
+
+- `config.json` / `config.sample.json` - configuration is via environment variables
+- KV namespace requirement
 
 ## Setup
 
-You will need a [Discord developer application](https://discord.com/developers/applications) to use for OAuth2 and a Cloudflare Access account to setup with. You will also need NodeJS.
+Requirements:
 
-- Clone the repository.
-- Install dependencies
-- Create a KV namespace on Cloudflare [here](https://dash.cloudflare.com/?to=/:account/workers/kv/namespaces).
-- Edit `wrangler.toml` to use your new KV namespace ID.
-- Copy `config.sample.json` to `config.json`.
-- Add your Discord application ID and OAuth2 secret to `config.json`.
-- Edit your Cloudflare Access subdomain into `config.json` under `redirectURL`.
-- Publish the Worker with `npx wrangler publish`!
+- A Cloudflare account with Workers enabled
+- A Cloudflare Access account with a `<name>.cloudflareaccess.com` subdomain
+- A [Discord developer application](https://discord.com/developers/applications) with OAuth2 configured
+  - Redirect URI: `https://<name>.cloudflareaccess.com/cdn-cgi/access/callback`
+- Node.js installed
 
-## Usage
+### Quick Deploy
 
-- Go to the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com)
-- Navigate to Settings > Authentication, select "Add new" under Login methods, select OpenID Connect.
-- Fill the following fields:
-    - Name: Whatever you want, e.g. `Discord`
-    - App ID: Your Discord application ID.
-    - Client secret: Your Discord application OAuth2 secret.
-    - Auth URL: `https://discord-oidc.YOURNAME.workers.dev/authorize/email` or swap out `/email` for `/guilds` to include the Guilds scope.
-    - Token URL:  `https://discord-oidc.YOURNAME.workers.dev/token`
-    - Certificate URL: `https://discord-oidc.YOURNAME.workers.dev/jwks.json`
-    - Proof Key for Code Exchange (PKCE): Enabled
-    - OIDC Claims:
-        - Email is included automatically without being set here.
-        - `preferred_username` will map to the users name + discrim e.g. `Erisa#9999`
-        - If the Auth URL is `/guilds` then the `guilds` claim can be used toprovide a list of guild IDs.
-        - Anything else from here will work: https://discord.com/developers/docs/resources/user#user-object-user-structure
+Click the deploy button above, or manually:
 
-My setup, as an example:
+1. Clone the repo and install dependencies:
+   ```bash
+   git clone https://github.com/meduseld-io/herugrim.git
+   cd herugrim
+   npm install
+   ```
 
-![](https://up.erisa.uk/firefox_5978jWH1ti.png)
+2. Set your environment variables in `wrangler.toml`:
+   ```toml
+   [vars]
+   CLIENT_ID = "your-discord-app-id"
+   REDIRECT_URI = "https://yourname.cloudflareaccess.com/cdn-cgi/access/callback"
 
-To use this in a policy, simply enable it as an Identity provider in your Access application and then create a rule using `OIDC Claims` and the relevant claim above. Make sure the claim has been added to your provider in the steps above.
+   # Optional - restrict to specific Discord servers (comma-separated)
+   ALLOWED_GUILDS = "guild-id-1,guild-id-2"
 
-This example would allow me to access the application if I was myself on Discord or if I was a member of a specific server:
-![](https://up.erisa.uk/firefox_1w0BXtk80X.png)
+   # Optional - detect admin role
+   ADMIN_GUILD_ID = ""
+   ADMIN_ROLE_ID = ""
+   ```
 
-## Security
+3. Set your client secret as a Wrangler secret (keeps it out of source):
+   ```bash
+   npx wrangler secret put CLIENT_SECRET
+   ```
 
-If you find a security vulnerability in this repository, do NOT create an Issue or Pull Request. Please contact me through email or message (There are links on my GitHub profile). If you create an issue for an active security vulnerability I will save the information and delete the issue.
+4. Test locally:
+   ```bash
+   npm run dev
+   ```
+
+5. Deploy:
+   ```bash
+   npm run deploy
+   ```
+
+### Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `CLIENT_ID` | Yes | Discord application OAuth2 client ID |
+| `CLIENT_SECRET` | Yes | Discord application OAuth2 client secret (use `wrangler secret put`) |
+| `REDIRECT_URI` | Yes | `https://<name>.cloudflareaccess.com/cdn-cgi/access/callback` |
+| `ALLOWED_GUILDS` | No | Comma-separated guild IDs to restrict access. Empty = allow any Discord user |
+| `ADMIN_GUILD_ID` | No | Guild to check for admin role. Defaults to first `ALLOWED_GUILDS` entry |
+| `ADMIN_ROLE_ID` | No | Discord role ID that grants admin. Empty = skip admin detection |
+
+## Endpoints
+
+| Path | Description |
+|---|---|
+| `GET /health` | Health check - returns `{ "status": "ok" }` |
+| `GET /.well-known/openid-configuration` | OIDC discovery document |
+| `GET /authorize` | Redirects to Discord OAuth2 consent screen |
+| `POST /token` | Exchanges authorization code for tokens |
+| `GET /jwks.json` | JSON Web Key Set for token verification |
+
+## Cloudflare Access Configuration
+
+1. Go to [Cloudflare Zero Trust](https://one.dash.cloudflare.com) → Settings → Authentication
+2. Add a new OpenID Connect login method:
+   - **App ID**: Your Discord application ID
+   - **Client secret**: Your Discord OAuth2 secret
+   - **Auth URL**: `https://discord-oidc.<your-workers-subdomain>.workers.dev/authorize`
+   - **Token URL**: `https://discord-oidc.<your-workers-subdomain>.workers.dev/token`
+   - **Certificate URL**: `https://discord-oidc.<your-workers-subdomain>.workers.dev/jwks.json`
+   - **PKCE**: Enabled
+   - **OIDC Claims**: `id`, `preferred_username`, `name`, `discord_user`
+
+The `discord_user` claim appears under the `custom` key in the Cloudflare Access identity response and contains `id`, `username`, `global_name`, `avatar`, `discriminator`, and `is_admin`.
+
+## Contributing
+
+Herugrim is open source and maintained by [Meduseld](https://github.com/meduseld-io). If you run into a problem, have a feature idea, or want to improve something - feel free to open an issue or submit a pull request.
+
+## Credits
+
+- Original project: [Erisa/discord-oidc-worker](https://github.com/Erisa/discord-oidc-worker) by [Erisa](https://github.com/Erisa)
+- Process flow inspired by [kimcore/discord-oidc](https://github.com/kimcore/discord-oidc)
+- Ideas from [eidam/cf-access-workers-oidc](https://github.com/eidam/cf-access-workers-oidc)
+
+## License
+
+MIT - see [LICENSE](LICENSE).
