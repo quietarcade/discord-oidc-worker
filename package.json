@@ -1,16 +1,29 @@
 {
   "name": "discord-oidc-worker",
-  "version": "1.0.0",
+  "version": "0.1.0-alpha",
   "description": "Discord OIDC Wrapper in CF Workers",
   "main": "worker.js",
   "scripts": {
-    "start": "wrangler dev"
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "prepare": "husky install",
+    "release": "commit-and-tag-version --prerelease alpha",
+    "release:patch": "commit-and-tag-version --release-as patch --prerelease alpha",
+    "release:minor": "commit-and-tag-version --release-as minor",
+    "release:major": "commit-and-tag-version --release-as major",
+    "release:stable": "commit-and-tag-version"
   },
   "author": "Erisa A <erisa@erisa.uk>",
   "license": "MIT",
   "dependencies": {
-    "hono": "^2.6.2",
-    "jose": "^4.11.1",
-    "wrangler": "^2.6.2"
+    "hono": "^4.6.20",
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^18.4.3",
+    "@commitlint/config-conventional": "^18.4.3",
+    "commit-and-tag-version": "^12.7.0",
+    "husky": "^8.0.3",
+    "wrangler": "^4.71.0"
   }
 }

@@ -1,135 +1,230 @@
-import { clientId, clientSecret, redirectURL } from './config.json'
-import { Hono } from 'hono'
-import * as jose from 'jose'
+import { Hono } from 'hono';
+import * as jose from 'jose';
 
-const algorithm = {
-	name: 'RSASSA-PKCS1-v1_5',
-	modulusLength: 2048,
-	publicExponent: new Uint8Array([0x01, 0x00, 0x01]),
-	hash: { name: 'SHA-256' },
+const app = new Hono();
+
+let keypair;
+
+async function getKeyPair() {
+  if (!keypair) {
+    keypair = await crypto.subtle.generateKey(
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: 'SHA-256',
+      },
+      true,
+      ['sign', 'verify']
+    );
+  }
+  return keypair;
 }
 
-const importAlgo = {
-	name: 'RSASSA-PKCS1-v1_5',
-	hash: { name: 'SHA-256' },
+/**
+ * Read a required env var or throw.
+ */
+function requireEnv(env, key) {
+  const val = env[key];
+  if (!val) throw new Error(`Missing required environment variable: ${key}`);
+  return val;
 }
 
-async function loadOrGenerateKeyPair(KV) {
-	let keyPair = {}
-	let keyPairJson = await KV.get('keys', { type: 'json' })
-
-	if (keyPairJson !== null) {
-		keyPair.publicKey = await crypto.subtle.importKey('jwk', keyPairJson.publicKey, importAlgo, true, ['verify'])
-		keyPair.privateKey = await crypto.subtle.importKey('jwk', keyPairJson.privateKey, importAlgo, true, ['sign'])
-
-		return keyPair
-	} else {
-		keyPair = await crypto.subtle.generateKey(algorithm, true, ['sign', 'verify'])
-
-		await KV.put('keys', JSON.stringify({
-			privateKey: await crypto.subtle.exportKey('jwk', keyPair.privateKey),
-			publicKey: await crypto.subtle.exportKey('jwk', keyPair.publicKey)
-		}))
-
-		return keyPair
-	}
-
+/**
+ * Parse ALLOWED_GUILDS from a comma-separated string into an array.
+ * Returns empty array if not set.
+ */
+function parseGuilds(env) {
+  const raw = env.ALLOWED_GUILDS || '';
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-const app = new Hono()
+/* ---------------- HEALTH ---------------- */
 
-app.get('/authorize/:scopemode', async (c) => {
+app.get('/health', (c) => {
+  return c.json({ status: 'ok' });
+});
 
-	if (c.req.query('client_id') !== clientId
-		|| c.req.query('redirect_uri') !== redirectURL
-		|| !['guilds', 'email'].includes(c.req.param('scopemode'))) {
-		return c.text('Bad request.', 400)
-	}
+/* ---------------- DISCOVERY ---------------- */
 
-	const params = new URLSearchParams({
-		'client_id': clientId,
-		'redirect_uri': redirectURL,
-		'response_type': 'code',
-		'scope': c.req.param('scopemode') == 'guilds' ? 'identify email guilds' : 'identify email',
-		'state': c.req.query('state'),
-		'prompt': 'none'
-	}).toString()
+app.get('/.well-known/openid-configuration', (c) => {
+  const base = new URL(c.req.url).origin;
 
-	return c.redirect('https://discord.com/oauth2/authorize?' + params)
-})
+  return c.json({
+    issuer: base,
+    authorization_endpoint: base + '/authorize',
+    token_endpoint: base + '/token',
+    jwks_uri: base + '/jwks.json',
+    response_types_supported: ['code'],
+    id_token_signing_alg_values_supported: ['RS256'],
+    subject_types_supported: ['public'],
+  });
+});
+
+/* ---------------- AUTHORIZE ---------------- */
+
+app.get('/authorize', (c) => {
+  const clientId = requireEnv(c.env, 'CLIENT_ID');
+  const redirectUri = requireEnv(c.env, 'REDIRECT_URI');
+  const adminRoleId = c.env.ADMIN_ROLE_ID || '';
+
+  // Only request guilds.members.read when admin detection is enabled
+  const scopes = adminRoleId
+    ? 'identify email guilds guilds.members.read'
+    : 'identify email guilds';
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: scopes,
+    state: c.req.query('state'),
+  });
+
+  return c.redirect('https://discord.com/oauth2/authorize?' + params);
+});
+
+/* ---------------- TOKEN ---------------- */
 
 app.post('/token', async (c) => {
-	const body = await c.req.parseBody()
-	const code = body['code']
-	const params = new URLSearchParams({
-		'client_id': clientId,
-		'client_secret': clientSecret,
-		'redirect_uri': redirectURL,
-		'code': code,
-		'grant_type': 'authorization_code',
-		'scope': 'identify email'
-	}).toString()
+  const clientId = requireEnv(c.env, 'CLIENT_ID');
+  const clientSecret = requireEnv(c.env, 'CLIENT_SECRET');
+  const redirectUri = requireEnv(c.env, 'REDIRECT_URI');
+  const allowedGuilds = parseGuilds(c.env);
+  const adminRoleId = c.env.ADMIN_ROLE_ID || '';
+  const adminGuildId = c.env.ADMIN_GUILD_ID || (allowedGuilds.length ? allowedGuilds[0] : '');
 
-	const r = await fetch('https://discord.com/api/oauth2/token', {
-		method: 'POST',
-		body: params,
-		headers: {
-			'Content-Type': 'application/x-www-form-urlencoded'
-		}
-	}).then(res => res.json())
+  const body = await c.req.parseBody();
 
-	if (r === null) return new Response("Bad request.", { status: 400 })
-	const userInfo = await fetch('https://discord.com/api/users/@me', {
-		headers: {
-			'Authorization': 'Bearer ' + r['access_token']
-		}
-	}).then(res => res.json())
+  // Exchange authorization code for access token
+  const params = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'authorization_code',
+    code: body.code,
+    redirect_uri: redirectUri,
+  });
 
-	let servers = []
+  const token = await fetch('https://discord.com/api/v10/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params,
+  }).then((r) => r.json());
 
-	const serverResp = await fetch('https://discord.com/api/users/@me/guilds', {
-		headers: {
-			'Authorization': 'Bearer ' + r['access_token']
-		}
-	})
+  if (token.error) {
+    console.error('Discord token exchange failed:', token.error, token.error_description);
+    return c.json({ error: 'Token exchange failed', detail: token.error_description }, 400);
+  }
 
-	if (serverResp.status === 200) {
-		const serverJson = await serverResp.json()
-		servers = serverJson.map(item => {
-			return item['id']
-		})
-	}
+  // Fetch user profile
+  const userRes = await fetch('https://discord.com/api/v10/users/@me', {
+    headers: { Authorization: 'Bearer ' + token.access_token },
+  });
 
-	if (!userInfo['verified']) return c.text('Bad request.', 400)
-	const idToken = await new jose.SignJWT({
-		iss: 'https://cloudflare.com',
-		aud: clientId,
-		preferred_username: `${userInfo['username']}#${userInfo['discriminator']}`,
-		...userInfo,
-		email: userInfo['email'],
-		guilds: servers
-	})
-		.setProtectedHeader({ alg: 'RS256' })
-		.setExpirationTime('1h')
-		.setAudience(clientId)
-		.sign((await loadOrGenerateKeyPair(c.env.KV)).privateKey)
+  if (!userRes.ok) {
+    console.error('Discord user fetch failed:', userRes.status, await userRes.text());
+    return c.text('Failed to fetch Discord user profile', 502);
+  }
 
-	return c.json({
-		...r,
-		scope: 'identify email',
-		id_token: idToken
-	})
-})
+  const user = await userRes.json();
+
+  if (!user.id) {
+    console.error('Discord user response missing id:', user);
+    return c.text('Invalid Discord user response', 502);
+  }
+
+  // Fetch guilds for restriction check
+  const guildsRes = await fetch('https://discord.com/api/v10/users/@me/guilds', {
+    headers: { Authorization: 'Bearer ' + token.access_token },
+  });
+
+  if (!guildsRes.ok) {
+    console.error('Discord guilds fetch failed:', guildsRes.status, await guildsRes.text());
+    return c.text('Failed to fetch Discord guilds', 502);
+  }
+
+  const guilds = await guildsRes.json();
+
+  if (!Array.isArray(guilds)) {
+    console.error('Discord guilds response is not an array:', guilds);
+    return c.text('Invalid Discord guilds response', 502);
+  }
+
+  if (allowedGuilds.length) {
+    const guildIds = guilds.map((g) => g.id);
+    if (!allowedGuilds.some((id) => guildIds.includes(id))) {
+      return c.text('Not in required Discord server', 403);
+    }
+  }
+
+  // Check admin role (only when ADMIN_ROLE_ID is configured)
+  let isAdmin = false;
+
+  if (adminRoleId && adminGuildId) {
+    try {
+      const memberRes = await fetch(
+        `https://discord.com/api/v10/users/@me/guilds/${adminGuildId}/member`,
+        { headers: { Authorization: 'Bearer ' + token.access_token } }
+      );
+
+      if (!memberRes.ok) {
+        console.error('Discord guild member fetch failed:', memberRes.status);
+      } else {
+        const member = await memberRes.json();
+        if (member.roles && Array.isArray(member.roles)) {
+          isAdmin = member.roles.includes(adminRoleId);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch guild member for admin check:', e);
+    }
+  }
+
+  const { privateKey } = await getKeyPair();
+
+  const idToken = await new jose.SignJWT({
+    sub: user.id,
+    name: user.global_name || user.username,
+    preferred_username: user.username,
+    email: user.email,
+    discord_user: {
+      id: user.id,
+      username: user.username,
+      global_name: user.global_name,
+      avatar: user.avatar,
+      discriminator: user.discriminator,
+      is_admin: isAdmin,
+    },
+  })
+    .setProtectedHeader({ alg: 'RS256' })
+    .setExpirationTime('1h')
+    .setAudience(clientId)
+    .setIssuer(new URL(c.req.url).origin)
+    .sign(privateKey);
+
+  return c.json({
+    access_token: token.access_token,
+    token_type: 'Bearer',
+    id_token: idToken,
+  });
+});
+
+/* ---------------- JWKS ---------------- */
 
 app.get('/jwks.json', async (c) => {
-	let publicKey = (await loadOrGenerateKeyPair(c.env.KV)).publicKey
-	return c.json({
-		keys: [{
-			alg: 'RS256',
-			kid: 'jwtRS256',
-			...(await crypto.subtle.exportKey('jwk', publicKey))
-		}]
-	})
-})
+  const { publicKey } = await getKeyPair();
 
-export default app
+  return c.json({
+    keys: [
+      {
+        alg: 'RS256',
+        ...(await crypto.subtle.exportKey('jwk', publicKey)),
+      },
+    ],
+  });
+});
+
+export default app;
