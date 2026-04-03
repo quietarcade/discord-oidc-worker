@@ -1,5 +1,9 @@
 # Changelog
 
+All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
+
+## [1.0.0](https://github.com/meduseld404/herugrim/compare/v0.1.0-alpha...v1.0.0) (2026-04-03)
+
 ## [0.1.0-alpha](https://github.com/meduseld-io/herugrim/releases/tag/v0.1.0-alpha)
 
 ### New Features
