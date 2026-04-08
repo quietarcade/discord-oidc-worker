@@ -16,7 +16,7 @@
   "author": "Erisa A <erisa@erisa.uk>",
   "license": "MIT",
   "dependencies": {
-    "hono": "^4.6.20",
+    "hono": "^4.12.12",
     "jose": "^5.9.6"
   },
   "devDependencies": {
